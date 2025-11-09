@@ -745,11 +745,14 @@
                 // 找出被重新結算的賽事（從 ProcessedInputs 中找出有多個結算記錄的 Selection）
                 let resettledSelectionId = null;
                 if (originalData.ProcessedInputs && originalData.SettlementHistory) {
-                    const settlementOperationIds = originalData.SettlementHistory.map(h => h.AccountOperationId);
+                    // 確保所有 ID 都轉換為字符串進行比較
+                    const settlementOperationIds = originalData.SettlementHistory.map(h => String(h.AccountOperationId));
 
                     for (const [selectionId, operationIds] of Object.entries(originalData.ProcessedInputs)) {
-                        // 找出在 SettlementHistory 中出現的操作
-                        const matchingOps = operationIds.filter(opId => settlementOperationIds.includes(opId.toString()));
+                        // 找出在 SettlementHistory 中出現的操作（確保類型一致）
+                        const matchingOps = operationIds.filter(opId =>
+                            settlementOperationIds.includes(String(opId))
+                        );
                         if (matchingOps.length >= 2) {
                             resettledSelectionId = selectionId;
                             break;
@@ -892,9 +895,13 @@ Reason for Resettlement: ${info.reason}`;
                 // 修復大整數精度問題：將 ID 字段轉換為字符串
                 // 這樣可以避免 JavaScript 數字精度丟失（超過 2^53-1 的整數）
                 let fixedInput = input
-                    .replace(/"(ReserveId|SQLTicketId|BetTicketId|TicketId|AccountOperationId|BetId|reserveid|_id)"\s*:\s*(\d{15,})/g,
+                    // 1. 轉換物件中的 ID 字段（如 "ReserveId": 123 → "ReserveId": "123"）
+                    .replace(/"(ReserveId|SQLTicketId|BetTicketId|TicketId|AccountOperationId|BetId|reserveid|_id|InputId)"\s*:\s*(\d{15,})/g,
                              '"$1": "$2"')
-                    .replace(/"(id)"\s*:\s*"(\d+)"/g, '"$1": "$2"');  // 保留已是字符串的 id
+                    // 2. 轉換陣列中的大整數（如 [123, 456] → ["123", "456"]）
+                    .replace(/(\[|,)\s*(\d{15,})/g, '$1"$2"')
+                    // 3. 修正被錯誤轉換的數字（如陣列結尾）
+                    .replace(/"(\d{15,})"\s*(\]|,)/g, '"$1"$2');
 
                 const data = JSON.parse(fixedInput);
                 currentData = data; // 保存原始數據
