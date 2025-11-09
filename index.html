@@ -635,25 +635,10 @@
                 reason: ''
             };
 
-            // 統一使用 ReserveId/reserveid 作為注單號（優先級最高）
-            // 這樣兩種格式的數據會顯示相同的注單號
-            if (Array.isArray(originalData)) {
-                // 交易陣列格式：從第一個交易中提取 reserveid
-                const firstTransaction = originalData.find(t => t.reserveid);
-                if (firstTransaction) {
-                    info.betId = firstTransaction.reserveid;
-                }
-            } else if (originalData && typeof originalData === 'object') {
-                // 注單詳情格式：優先使用 ReserveId
-                info.betId = originalData.ReserveId || originalData.SQLTicketId || originalData._id || '';
-            }
+            // 優先使用 BetID（從 XML 提取）或 PurchaseID（ReserveId/reserveid）
+            // 先嘗試從交易陣列的 XML 中提取 BetID
+            let extractedBetId = null;
 
-            // 如果還沒有 betId，從 detectionResult 中獲取
-            if (!info.betId) {
-                info.betId = detectionResult.purchaseId || detectionResult.ticketId || '';
-            }
-
-            // 處理交易陣列格式（從 XML 中提取信息）
             if (detectionResult.transactionData && Array.isArray(detectionResult.transactionData)) {
                 const transactions = detectionResult.transactionData;
                 const settlementOps = transactions.filter(t =>
@@ -670,6 +655,12 @@
 
                 if (targetTransaction && targetTransaction.reqparams) {
                     const xml = targetTransaction.reqparams;
+
+                    // 嘗試提取 BetID
+                    const betIdMatch = xml.match(/BetID="([^"]+)"/i) || xml.match(/<Bet[^>]*\sID="([^"]+)"/i);
+                    if (betIdMatch && betIdMatch[1]) {
+                        extractedBetId = betIdMatch[1];
+                    }
 
                     // 提取賽事名稱（從 Selection 或 Lines 元素）
                     const eventNameMatch = xml.match(/EventName="([^"]+)"/i);
@@ -706,11 +697,33 @@
                     info.firstSettlementTime = formatDateTime(settlementOps[0].creationdate);
                     info.lastUpdateTime = formatDateTime(settlementOps[settlementOps.length - 1].creationdate);
                 }
+            }
 
-                // 如果從 XML 中提取到了賽事信息，直接返回
-                if (info.event) {
-                    return info;
+            // 設置 Bet ID 的優先級：
+            // 1. 從 XML 中提取的 BetID（如果有）
+            // 2. PurchaseID（ReserveId/reserveid）
+            // 3. 其他 ID
+            if (extractedBetId) {
+                info.betId = extractedBetId;
+            } else if (Array.isArray(originalData)) {
+                // 交易陣列格式：使用 reserveid (PurchaseID)
+                const firstTransaction = originalData.find(t => t.reserveid);
+                if (firstTransaction) {
+                    info.betId = firstTransaction.reserveid;
                 }
+            } else if (originalData && typeof originalData === 'object') {
+                // 注單詳情格式：使用 ReserveId (PurchaseID)
+                info.betId = originalData.ReserveId || originalData.SQLTicketId || originalData._id || '';
+            }
+
+            // 如果還沒有 betId，從 detectionResult 中獲取
+            if (!info.betId) {
+                info.betId = detectionResult.purchaseId || detectionResult.ticketId || '';
+            }
+
+            // 如果從 XML 中提取到了賽事信息，直接返回
+            if (info.event) {
+                return info;
             }
 
             // 從原始數據提取更多信息
