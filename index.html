@@ -657,9 +657,9 @@
                 if (targetTransaction && targetTransaction.reqparams) {
                     const xml = targetTransaction.reqparams;
 
-                    // 嘗試提取 BetID
+                    // 嘗試提取 BetID（從 <Bet> 或 <Change><Bets><Bet> 元素）
                     const betIdMatch = xml.match(/BetID="([^"]+)"/i) || xml.match(/<Bet[^>]*\sID="([^"]+)"/i);
-                    if (betIdMatch && betIdMatch[1]) {
+                    if (betIdMatch && betIdMatch[1] && betIdMatch[1] !== '0') {
                         extractedBetId = betIdMatch[1];
                     }
 
@@ -669,15 +669,31 @@
                         info.event = eventNameMatch[1];
                     }
 
-                    // 提取狀態變化（從 Change 元素）
+                    // 提取狀態變化（區分 Selection 和 Bet 的狀態）
+                    // 1. 從 <Change> 元素提取 Selection 的狀態變化（賽事狀態）
                     const changeMatch = xml.match(/<Change[^>]*\sOldStatus="([^"]+)"\s+NewStatus="([^"]+)"/i);
                     if (changeMatch) {
-                        const oldStatus = changeMatch[1];
-                        const newStatus = changeMatch[2];
-                        info.settlementHistory = `${oldStatus} → ${newStatus}`;
+                        const oldSelectionStatus = changeMatch[1];
+                        const newSelectionStatus = changeMatch[2];
+                        info.settlementHistory = `${oldSelectionStatus} → ${newSelectionStatus}`;
+                        info.eventStatus = newSelectionStatus;
                     }
 
-                    // 如果沒有 Change 元素，嘗試從 Bet 元素提取
+                    // 2. 從 <Bet> 元素提取整張注單的狀態（注單狀態）
+                    const betMatch = xml.match(/<Bet[^>]*\sOldStatus="([^"]+)"\s+NewStatus="([^"]+)"/i);
+                    if (betMatch) {
+                        const oldBetStatus = betMatch[1];
+                        const newBetStatus = betMatch[2];
+                        info.betStatus = newBetStatus;
+                    } else {
+                        // 如果沒有 Bet 的 OldStatus/NewStatus，使用 Status
+                        const statusMatch = xml.match(/<Bet[^>]*\sStatus="([^"]+)"/i);
+                        if (statusMatch) {
+                            info.betStatus = statusMatch[1];
+                        }
+                    }
+
+                    // 如果只有一個狀態，可能是 Change 元素的 NewStatus
                     if (!info.settlementHistory) {
                         const oldStatusMatch = xml.match(/OldStatus="([^"]+)"/i);
                         const newStatusMatch = xml.match(/NewStatus="([^"]+)"/i);
@@ -685,18 +701,41 @@
                             info.settlementHistory = `${oldStatusMatch[1]} → ${newStatusMatch[1]}`;
                         }
                     }
-
-                    // 提取最終狀態（從 NewStatus 或 Status）
-                    const finalStatusMatch = xml.match(/NewStatus="([^"]+)"/i) || xml.match(/Status="([^"]+)"/i);
-                    if (finalStatusMatch) {
-                        info.betStatus = finalStatusMatch[1];
-                    }
                 }
 
                 // 提取時間（第一次和最後一次結算操作）
                 if (settlementOps.length > 0) {
                     info.firstSettlementTime = formatDateTime(settlementOps[0].creationdate);
                     info.lastUpdateTime = formatDateTime(settlementOps[settlementOps.length - 1].creationdate);
+                }
+
+                // 如果有多次結算操作，提取完整的狀態變化歷史
+                if (settlementOps.length > 1) {
+                    const statusChanges = [];
+                    for (const op of settlementOps) {
+                        if (op.reqparams) {
+                            const changeMatch = op.reqparams.match(/<Change[^>]*\sOldStatus="([^"]+)"\s+NewStatus="([^"]+)"/i);
+                            if (changeMatch) {
+                                statusChanges.push({
+                                    old: changeMatch[1],
+                                    new: changeMatch[2],
+                                    time: formatDateTime(op.creationdate)
+                                });
+                            }
+                        }
+                    }
+
+                    // 如果有多個狀態變化，構建完整的歷史
+                    if (statusChanges.length > 1) {
+                        const fullHistory = statusChanges.map((change, index) => {
+                            if (index === 0) {
+                                return `${change.old} → ${change.new}`;
+                            } else {
+                                return change.new;
+                            }
+                        }).join(' → ');
+                        info.settlementHistory = fullHistory;
+                    }
                 }
             }
 
