@@ -771,18 +771,12 @@
 
             // 從原始數據提取更多信息
             if (originalData && typeof originalData === 'object' && !Array.isArray(originalData)) {
-                // 找出被重新結算的賽事（從 ProcessedInputs 中找出有多個結算記錄的 Selection）
+                // 找出被重新結算的賽事（從 ProcessedInputs 中找出有多個處理記錄的 Selection）
                 let resettledSelectionId = null;
-                if (originalData.ProcessedInputs && originalData.SettlementHistory) {
-                    // 確保所有 ID 都轉換為字符串進行比較
-                    const settlementOperationIds = originalData.SettlementHistory.map(h => String(h.AccountOperationId));
-
+                if (originalData.ProcessedInputs) {
+                    // 直接查找有多個 InputId 的 Selection（表示被處理了多次）
                     for (const [selectionId, operationIds] of Object.entries(originalData.ProcessedInputs)) {
-                        // 找出在 SettlementHistory 中出現的操作（確保類型一致）
-                        const matchingOps = operationIds.filter(opId =>
-                            settlementOperationIds.includes(String(opId))
-                        );
-                        if (matchingOps.length >= 2) {
+                        if (Array.isArray(operationIds) && operationIds.length >= 2) {
                             resettledSelectionId = selectionId;
                             break;
                         }
@@ -791,9 +785,13 @@
 
                 // 從 Selections 中提取賽事名稱和狀態
                 if (resettledSelectionId && originalData.Selections && Array.isArray(originalData.Selections)) {
-                    const selection = originalData.Selections.find(s => s.MarketId === resettledSelectionId || s.SelectionId === resettledSelectionId);
+                    const selection = originalData.Selections.find(s =>
+                        s.MarketId === resettledSelectionId ||
+                        s.SelectionId === resettledSelectionId ||
+                        s.SelectionId.startsWith(resettledSelectionId)  // 處理 SelectionId 有後綴的情況
+                    );
                     if (selection) {
-                        info.event = selection.EventName || selection.Team1Name + ' vs ' + selection.Team2Name || '';
+                        info.event = selection.EventName || (selection.Team1Name && selection.Team2Name ? selection.Team1Name + ' vs ' + selection.Team2Name : '');
 
                         // 提取該場賽事的狀態（eventStatus）
                         if (selection.SelectionStatus !== undefined) {
@@ -809,7 +807,12 @@
                     } else if (originalData.Selections && originalData.Selections.length > 0) {
                         // 使用第一個 Selection 的賽事名稱
                         const firstSel = originalData.Selections[0];
-                        info.event = firstSel.EventName || (firstSel.Team1Name + ' vs ' + firstSel.Team2Name) || '';
+                        info.event = firstSel.EventName || (firstSel.Team1Name && firstSel.Team2Name ? firstSel.Team1Name + ' vs ' + firstSel.Team2Name : '');
+
+                        // 如果沒有找到被重新結算的 Selection，也嘗試設置 eventStatus
+                        if (!info.eventStatus && firstSel.SelectionStatus !== undefined) {
+                            info.eventStatus = getBetStatusName(firstSel.SelectionStatus);
+                        }
                     }
                 }
 
@@ -829,41 +832,9 @@
                         // betStatus 總是顯示整張注單的最終狀態
                         info.betStatus = getBetStatusName(last.NewBetStatus);
 
-                        // settlementHistory 顯示被重新結算賽事的狀態變化
-                        if (resettledSelectionId && originalData.Selections) {
-                            const resettledSelection = originalData.Selections.find(s =>
-                                s.MarketId === resettledSelectionId || s.SelectionId === resettledSelectionId
-                            );
-
-                            if (resettledSelection && resettledSelection.SelectionStatus !== undefined) {
-                                // 推斷該場賽事的狀態變化
-                                if (resettledSelection.SelectionStatus === 17) { // Half Won
-                                    // 檢查整個 Bet 從什麼狀態變化而來
-                                    const oldBetStatus = first.OldBetStatus;
-                                    if (oldBetStatus === 1) { // 如果整個 Bet 曾經是 Lost
-                                        info.settlementHistory = 'Lost → Half Won';
-                                    } else {
-                                        info.settlementHistory = 'Won → Half Won';
-                                    }
-                                } else if (resettledSelection.SelectionStatus === 16) { // Half Lost
-                                    const oldBetStatus = first.OldBetStatus;
-                                    if (oldBetStatus === 2) { // 如果整個 Bet 曾經是 Won
-                                        info.settlementHistory = 'Won → Half Lost';
-                                    } else {
-                                        info.settlementHistory = 'Lost → Half Lost';
-                                    }
-                                } else {
-                                    // 其他情況，使用整個 Bet 的狀態變化
-                                    info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
-                                }
-                            } else {
-                                // 沒找到 selection，使用整個 Bet 的狀態變化
-                                info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
-                            }
-                        } else {
-                            // 單場注單或沒找到 resettled selection，使用整個 Bet 的狀態變化
-                            info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
-                        }
+                        // settlementHistory 顯示重新結算標記
+                        // 因為數據結構不支持獲取單個賽事的歷史狀態變化，只能標記為"已重新結算"
+                        info.settlementHistory = '已重新结算 (Resettled)';
 
                         // 時間
                         info.firstSettlementTime = formatDateTime(first.DateUpdated);
