@@ -321,17 +321,7 @@
 
             <!-- 結果區 -->
             <div class="section">
-                <div class="tabs">
-                    <button class="tab active" onclick="switchTab('quick')">快速對話</button>
-                    <button class="tab" onclick="switchTab('trilingual')">三語言報告</button>
-                    <button class="tab" onclick="switchTab('detail')">詳細資訊</button>
-                    <button class="tab" onclick="switchTab('english')">English Version</button>
-                </div>
-
-                <div id="result-quick" class="result-box"></div>
-                <div id="result-trilingual" class="result-box" style="display: none;"></div>
-                <div id="result-detail" class="result-box" style="display: none;"></div>
-                <div id="result-english" class="result-box" style="display: none;"></div>
+                <div id="result-trilingual" class="result-box"></div>
             </div>
         </div>
     </div>
@@ -645,7 +635,11 @@
             };
 
             // 提取 Bet ID
-            if (detectionResult.ticketId) {
+            if (originalData.SQLTicketId) {
+                info.betId = originalData.SQLTicketId;
+            } else if (originalData._id) {
+                info.betId = originalData._id;
+            } else if (detectionResult.ticketId) {
                 info.betId = detectionResult.ticketId;
             } else if (detectionResult.purchaseId) {
                 info.betId = detectionResult.purchaseId;
@@ -653,25 +647,48 @@
 
             // 從原始數據提取更多信息
             if (originalData && typeof originalData === 'object' && !Array.isArray(originalData)) {
-                // 提取賽事名稱（如果有）
-                if (originalData.Event || originalData.EventName) {
-                    info.event = originalData.Event || originalData.EventName;
-                } else if (originalData.ProcessedInputs) {
-                    // 嘗試從 ProcessedInputs 的 key 中提取
-                    const keys = Object.keys(originalData.ProcessedInputs);
-                    if (keys.length > 0) {
-                        info.event = keys[0]; // 可能需要進一步解析
+                // 找出被重新結算的賽事（從 ProcessedInputs 中找出有多個結算記錄的 Selection）
+                let resettledSelectionId = null;
+                if (originalData.ProcessedInputs && originalData.SettlementHistory) {
+                    const settlementOperationIds = originalData.SettlementHistory.map(h => h.AccountOperationId);
+
+                    for (const [selectionId, operationIds] of Object.entries(originalData.ProcessedInputs)) {
+                        // 找出在 SettlementHistory 中出現的操作
+                        const matchingOps = operationIds.filter(opId => settlementOperationIds.includes(opId.toString()));
+                        if (matchingOps.length >= 2) {
+                            resettledSelectionId = selectionId;
+                            break;
+                        }
+                    }
+                }
+
+                // 從 Selections 中提取賽事名稱
+                if (resettledSelectionId && originalData.Selections && Array.isArray(originalData.Selections)) {
+                    const selection = originalData.Selections.find(s => s.MarketId === resettledSelectionId || s.SelectionId === resettledSelectionId);
+                    if (selection) {
+                        info.event = selection.EventName || selection.Team1Name + ' vs ' + selection.Team2Name || '';
+                    }
+                }
+
+                // 如果沒找到，嘗試簡單方法
+                if (!info.event) {
+                    if (originalData.Event || originalData.EventName) {
+                        info.event = originalData.Event || originalData.EventName;
+                    } else if (originalData.Selections && originalData.Selections.length > 0) {
+                        // 使用第一個 Selection 的賽事名稱
+                        const firstSel = originalData.Selections[0];
+                        info.event = firstSel.EventName || (firstSel.Team1Name + ' vs ' + firstSel.Team2Name) || '';
                     }
                 }
 
                 // 提取結算歷史
                 if (originalData.SettlementHistory && Array.isArray(originalData.SettlementHistory)) {
-                    if (originalData.SettlementHistory.length > 0) {
+                    if (originalData.SettlementHistory.length >= 2) {
                         const first = originalData.SettlementHistory[0];
                         const last = originalData.SettlementHistory[originalData.SettlementHistory.length - 1];
 
-                        // 結算歷史
-                        info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
+                        // 結算歷史（顯示第一次結算的新狀態 → 最後一次結算的新狀態）
+                        info.settlementHistory = `${getBetStatusName(first.NewBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
 
                         // 最終狀態
                         info.betStatus = getBetStatusName(last.NewBetStatus);
@@ -679,6 +696,12 @@
                         // 時間
                         info.firstSettlementTime = formatDateTime(first.DateUpdated);
                         info.lastUpdateTime = formatDateTime(last.DateUpdated);
+                    } else if (originalData.SettlementHistory.length === 1) {
+                        const settlement = originalData.SettlementHistory[0];
+                        info.settlementHistory = `${getBetStatusName(settlement.OldBetStatus)} → ${getBetStatusName(settlement.NewBetStatus)}`;
+                        info.betStatus = getBetStatusName(settlement.NewBetStatus);
+                        info.firstSettlementTime = formatDateTime(settlement.DateUpdated);
+                        info.lastUpdateTime = formatDateTime(settlement.DateUpdated);
                     }
                 }
             }
@@ -781,89 +804,68 @@ Reason for Resettlement: ${info.reason}`;
         }
 
         function displayResult(result, originalData) {
-            const quickMessage = generateQuickReplyMessage(result);
-            const englishMessage = generateQuickReplyMessageEN(result);
-            const detailInfo = JSON.stringify(result, null, 2);
-
-            const quickBox = document.getElementById('result-quick');
             const trilingualBox = document.getElementById('result-trilingual');
-            const detailBox = document.getElementById('result-detail');
-            const englishBox = document.getElementById('result-english');
-
             const boxClass = result.isResettlement ? 'warning' : 'success';
             const icon = result.isResettlement ? '⚠️' : '✅';
-
-            // 快速對話
-            quickBox.className = `result-box ${boxClass}`;
-            quickBox.style.display = 'block';
-            quickBox.innerHTML = `
-                <div class="result-title">
-                    <span class="icon">${icon}</span>
-                    ${result.isResettlement ? '檢測到重新結算' : '無重新結算'}
-                </div>
-                <div class="result-content">${quickMessage}</div>
-                <button class="copy-button" onclick="copyToClipboard('${escapeHtml(quickMessage)}', this)">📋 複製訊息</button>
-            `;
 
             // 三語言報告
             const detailedInfo = extractDetailedInfo(result, originalData);
             const trilingualReport = generateTrilingualReport(detailedInfo);
 
-            if (result.isResettlement && trilingualReport.combined) {
+            if (result.isResettlement && trilingualReport.chinese) {
                 trilingualBox.className = `result-box ${boxClass}`;
+                trilingualBox.style.display = 'block';
                 trilingualBox.innerHTML = `
                     <div class="result-title">
                         <span class="icon">🌐</span>
-                        三語言報告 (中文 / English / 한국어)
+                        重新結算報告 / Resettlement Report / 재정산 보고서
                     </div>
-                    <div class="result-content">${trilingualReport.combined}</div>
-                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.chinese)}', this)">📋 複製中文</button>
-                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.english)}', this)">📋 Copy English</button>
-                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.korean)}', this)">📋 한국어 복사</button>
-                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.combined)}', this)">📋 複製全部</button>
+
+                    <div style="margin-top: 25px;">
+                        <div style="background: #fff; padding: 15px; border-radius: 8px; border-left: 4px solid #1976D2; margin-bottom: 20px;">
+                            <div style="font-weight: 600; color: #1976D2; margin-bottom: 10px; font-size: 16px;">🇨🇳 中文版本</div>
+                            <div class="result-content" style="background: rgba(25, 118, 210, 0.05);">${trilingualReport.chinese}</div>
+                            <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.chinese)}', this)">📋 複製中文</button>
+                        </div>
+
+                        <div style="background: #fff; padding: 15px; border-radius: 8px; border-left: 4px solid #43A047; margin-bottom: 20px;">
+                            <div style="font-weight: 600; color: #43A047; margin-bottom: 10px; font-size: 16px;">🇬🇧 English Version</div>
+                            <div class="result-content" style="background: rgba(67, 160, 71, 0.05);">${trilingualReport.english}</div>
+                            <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.english)}', this)">📋 Copy English</button>
+                        </div>
+
+                        <div style="background: #fff; padding: 15px; border-radius: 8px; border-left: 4px solid #E53935; margin-bottom: 20px;">
+                            <div style="font-weight: 600; color: #E53935; margin-bottom: 10px; font-size: 16px;">🇰🇷 한국어 버전</div>
+                            <div class="result-content" style="background: rgba(229, 57, 53, 0.05);">${trilingualReport.korean}</div>
+                            <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.korean)}', this)">📋 한국어 복사</button>
+                        </div>
+
+                        <div style="text-align: center; margin-top: 25px;">
+                            <button class="copy-button" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); font-size: 15px; padding: 12px 40px;" onclick="copyToClipboard('${escapeHtml(trilingualReport.combined)}', this)">📋 複製全部三種語言 / Copy All / 모든 언어 복사</button>
+                        </div>
+                    </div>
                 `;
             } else {
                 trilingualBox.className = 'result-box success';
+                trilingualBox.style.display = 'block';
                 trilingualBox.innerHTML = `
                     <div class="result-title">
                         <span class="icon">✅</span>
-                        無重新結算
+                        無重新結算 / No Resettlement / 재정산 없음
                     </div>
-                    <div class="result-content">此注單無需生成三語言報告</div>
+                    <div class="result-content">此注單無需生成三語言報告<br>No trilingual report needed for this bet<br>이 베팅에 대한 다국어 보고서가 필요하지 않습니다</div>
                 `;
             }
-
-            // 詳細資訊
-            detailBox.className = `result-box ${boxClass}`;
-            detailBox.innerHTML = `
-                <div class="result-title">
-                    <span class="icon">📊</span>
-                    詳細檢測資訊
-                </div>
-                <div class="result-content">${detailInfo}</div>
-                <button class="copy-button" onclick="copyToClipboard('${escapeHtml(detailInfo)}', this)">📋 複製 JSON</button>
-            `;
-
-            // 英文版
-            englishBox.className = `result-box ${boxClass}`;
-            englishBox.innerHTML = `
-                <div class="result-title">
-                    <span class="icon">${icon}</span>
-                    ${result.isResettlement ? 'Resettlement Detected' : 'No Resettlement'}
-                </div>
-                <div class="result-content">${englishMessage}</div>
-                <button class="copy-button" onclick="copyToClipboard('${escapeHtml(englishMessage)}', this)">📋 Copy Message</button>
-            `;
         }
 
         function showError(message) {
-            const quickBox = document.getElementById('result-quick');
-            quickBox.className = 'result-box error';
-            quickBox.style.display = 'block';
-            quickBox.innerHTML = `
+            const trilingualBox = document.getElementById('result-trilingual');
+            trilingualBox.className = 'result-box error';
+            trilingualBox.style.display = 'block';
+            trilingualBox.innerHTML = `
                 <div class="result-title">
                     <span class="icon">❌</span>
-                    錯誤
+                    錯誤 / Error / 오류
                 </div>
                 <div class="result-content">${message}</div>
             `;
@@ -871,23 +873,8 @@ Reason for Resettlement: ${info.reason}`;
 
         function clearAll() {
             document.getElementById('jsonInput').value = '';
-            document.getElementById('result-quick').style.display = 'none';
             document.getElementById('result-trilingual').style.display = 'none';
-            document.getElementById('result-detail').style.display = 'none';
-            document.getElementById('result-english').style.display = 'none';
             currentData = null;
-        }
-
-        function switchTab(tab) {
-            // 更新 tab 樣式
-            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-            event.target.classList.add('active');
-
-            // 切換顯示
-            document.getElementById('result-quick').style.display = tab === 'quick' ? 'block' : 'none';
-            document.getElementById('result-trilingual').style.display = tab === 'trilingual' ? 'block' : 'none';
-            document.getElementById('result-detail').style.display = tab === 'detail' ? 'block' : 'none';
-            document.getElementById('result-english').style.display = tab === 'english' ? 'block' : 'none';
         }
 
         function copyToClipboard(text, button) {
