@@ -368,7 +368,8 @@
                         isResettlement: true,
                         method: 'IsResettlement flag in XML',
                         creditCount: 1,
-                        operations: settlementOperations
+                        operations: settlementOperations,
+                        transactionData: transactions
                     };
                 }
 
@@ -390,7 +391,8 @@
                     balance: op.balance,
                     oldStatus: statusMatch ? statusMatch[1] : 'Unknown',
                     newStatus: statusMatch ? statusMatch[2] : 'Unknown',
-                    requestId: op.requestid
+                    requestId: op.requestid,
+                    reqparams: op.reqparams
                 };
             });
 
@@ -399,6 +401,7 @@
                 method: 'Multiple settlement operations',
                 creditCount: settlementOperations.length,
                 operations: details,
+                transactionData: transactions,
                 purchaseId: settlementOperations[0].opLogPurchaseId ||
                             (settlementOperations[0].queryparams ?
                              (settlementOperations[0].queryparams.match(/"purchase_id":"([^"]+)"/) || [])[1] : null)
@@ -634,6 +637,73 @@
                 reason: ''
             };
 
+            // 處理交易陣列格式（從 XML 中提取信息）
+            if (detectionResult.transactionData && Array.isArray(detectionResult.transactionData)) {
+                const transactions = detectionResult.transactionData;
+                const settlementOps = transactions.filter(t =>
+                    (t.operationType === 'credit_customer' || t.reqtypeid === 12 ||
+                     t.operationType === 'debit_customer' || t.reqtypeid === 11) &&
+                    t.reqparams
+                );
+
+                // 找到有 IsResettlement="1" 的交易或最後一筆交易
+                let targetTransaction = settlementOps.find(op => op.reqparams && op.reqparams.includes('IsResettlement="1"'));
+                if (!targetTransaction && settlementOps.length > 0) {
+                    targetTransaction = settlementOps[settlementOps.length - 1];
+                }
+
+                if (targetTransaction && targetTransaction.reqparams) {
+                    const xml = targetTransaction.reqparams;
+
+                    // 提取 Bet ID
+                    const betIdMatch = xml.match(/BetID="([^"]+)"/i) || xml.match(/<Bet[^>]*\sID="([^"]+)"/i);
+                    if (betIdMatch) {
+                        info.betId = betIdMatch[1];
+                    }
+
+                    // 提取賽事名稱（從 Selection 或 Lines 元素）
+                    const eventNameMatch = xml.match(/EventName="([^"]+)"/i);
+                    if (eventNameMatch) {
+                        info.event = eventNameMatch[1];
+                    }
+
+                    // 提取狀態變化（從 Change 元素）
+                    const changeMatch = xml.match(/<Change[^>]*\sOldStatus="([^"]+)"\s+NewStatus="([^"]+)"/i);
+                    if (changeMatch) {
+                        const oldStatus = changeMatch[1];
+                        const newStatus = changeMatch[2];
+                        info.settlementHistory = `${oldStatus} → ${newStatus}`;
+                    }
+
+                    // 如果沒有 Change 元素，嘗試從 Bet 元素提取
+                    if (!info.settlementHistory) {
+                        const oldStatusMatch = xml.match(/OldStatus="([^"]+)"/i);
+                        const newStatusMatch = xml.match(/NewStatus="([^"]+)"/i);
+                        if (oldStatusMatch && newStatusMatch) {
+                            info.settlementHistory = `${oldStatusMatch[1]} → ${newStatusMatch[1]}`;
+                        }
+                    }
+
+                    // 提取最終狀態（從 NewStatus 或 Status）
+                    const finalStatusMatch = xml.match(/NewStatus="([^"]+)"/i) || xml.match(/Status="([^"]+)"/i);
+                    if (finalStatusMatch) {
+                        info.betStatus = finalStatusMatch[1];
+                    }
+                }
+
+                // 提取時間（第一次和最後一次結算操作）
+                if (settlementOps.length > 0) {
+                    info.firstSettlementTime = formatDateTime(settlementOps[0].creationdate);
+                    info.lastUpdateTime = formatDateTime(settlementOps[settlementOps.length - 1].creationdate);
+                }
+
+                // 如果找到了信息，直接返回
+                if (info.betId || info.event) {
+                    return info;
+                }
+            }
+
+            // 處理注單詳情 JSON 格式（原有邏輯）
             // 提取 Bet ID
             if (originalData.SQLTicketId) {
                 info.betId = originalData.SQLTicketId;
@@ -756,14 +826,15 @@ Reason for Resettlement: ${info.reason}`;
 
             try {
                 const date = new Date(dateString);
-                const year = date.getFullYear();
-                const month = String(date.getMonth() + 1).padStart(2, '0');
-                const day = String(date.getDate()).padStart(2, '0');
-                const hours = String(date.getHours()).padStart(2, '0');
-                const minutes = String(date.getMinutes()).padStart(2, '0');
-                const seconds = String(date.getSeconds()).padStart(2, '0');
+                // 使用 UTC 時間確保顯示為 UTC+0
+                const year = date.getUTCFullYear();
+                const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+                const day = String(date.getUTCDate()).padStart(2, '0');
+                const hours = String(date.getUTCHours()).padStart(2, '0');
+                const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+                const seconds = String(date.getUTCSeconds()).padStart(2, '0');
 
-                return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+                return `${year}-${month}-${day} ${hours}:${minutes}:${seconds} (UTC+0)`;
             } catch (e) {
                 return dateString;
             }
