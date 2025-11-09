@@ -351,38 +351,42 @@
         }
 
         function detectResettlementFromTransactions(transactions) {
-            const creditOperations = transactions.filter(t =>
-                t.operationType === 'credit_customer' || t.reqtypeid === 12
+            // FIXED: 找出所有結算相關操作（credit_customer 和 debit_customer）
+            const settlementOperations = transactions.filter(t =>
+                t.operationType === 'credit_customer' || t.reqtypeid === 12 ||
+                t.operationType === 'debit_customer' || t.reqtypeid === 11
             );
 
-            if (creditOperations.length === 0) {
+            if (settlementOperations.length === 0) {
                 return {
                     isResettlement: false,
-                    method: 'No credit operations found'
+                    method: 'No settlement operations found'
                 };
             }
 
-            if (creditOperations.length === 1) {
-                const hasResettlementFlag = creditOperations[0].reqparams &&
-                    creditOperations[0].reqparams.includes('IsResettlement="1"');
+            // FIXED: 檢查任何操作是否有 IsResettlement="1" 標記
+            const hasResettlementFlag = settlementOperations.some(op =>
+                op.reqparams && op.reqparams.includes('IsResettlement="1"')
+            );
 
+            if (settlementOperations.length === 1) {
                 if (hasResettlementFlag) {
                     return {
                         isResettlement: true,
                         method: 'IsResettlement flag in XML',
                         creditCount: 1,
-                        operations: creditOperations
+                        operations: settlementOperations
                     };
                 }
 
                 return {
                     isResettlement: false,
-                    method: 'Single credit operation without resettlement flag',
+                    method: 'Single settlement operation without resettlement flag',
                     creditCount: 1
                 };
             }
 
-            const details = creditOperations.map(op => {
+            const details = settlementOperations.map(op => {
                 const statusMatch = op.reqparams ?
                     op.reqparams.match(/OldStatus="([^"]+)" NewStatus="([^"]+)"/) : null;
 
@@ -399,12 +403,12 @@
 
             return {
                 isResettlement: true,
-                method: 'Multiple credit_customer operations',
-                creditCount: creditOperations.length,
+                method: 'Multiple settlement operations',
+                creditCount: settlementOperations.length,
                 operations: details,
-                purchaseId: creditOperations[0].opLogPurchaseId ||
-                            (creditOperations[0].queryparams ?
-                             (creditOperations[0].queryparams.match(/"purchase_id":"([^"]+)"/) || [])[1] : null)
+                purchaseId: settlementOperations[0].opLogPurchaseId ||
+                            (settlementOperations[0].queryparams ?
+                             (settlementOperations[0].queryparams.match(/"purchase_id":"([^"]+)"/) || [])[1] : null)
             };
         }
 
@@ -435,7 +439,9 @@
                     const settlement = ticketDetail.SettlementHistory[0];
                     const oldStatus = settlement.OldBetStatus;
 
-                    if (oldStatus >= 2 && oldStatus <= 4) {
+                    // FIXED: 1=Lost, 2=Won, 3=Draw, 16=Half Lost, 17=Half Won 都是已結算狀態
+                    const settledStatuses = [1, 2, 3, 16, 17];
+                    if (settledStatuses.includes(oldStatus)) {
                         return {
                             isResettlement: true,
                             method: 'Status change from settled state',
@@ -474,15 +480,18 @@
             };
         }
 
+        // FIXED: 正確的狀態碼對應
         function getBetStatusName(statusCode) {
             const statusMap = {
                 0: 'Opened',
-                1: 'Pending',
+                1: 'Lost',
                 2: 'Won',
                 3: 'Draw',
-                4: 'Lost',
-                5: 'Cancelled',
-                6: 'Cashout'
+                4: 'Canceled',
+                15: 'Declined',
+                16: 'Half Lost',
+                17: 'Half Won',
+                32: 'Cashout'
             };
             return statusMap[statusCode] || `Unknown(${statusCode})`;
         }
@@ -638,7 +647,7 @@
         function getMethodDescription(method) {
             const methodMap = {
                 'Multiple settlement history entries': '多次結算記錄',
-                'Multiple credit_customer operations': '多次信用操作',
+                'Multiple settlement operations': '多次結算操作',
                 'Status change from settled state': '從已結算狀態變更',
                 'Multiple processed inputs': '多次處理輸入',
                 'IsResettlement flag in XML': 'XML重新結算標記'
