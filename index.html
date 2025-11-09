@@ -701,8 +701,9 @@
 
             // 設置 Bet ID 的優先級：
             // 1. 從 XML 中提取的 BetID（如果有）
-            // 2. PurchaseID（ReserveId/reserveid）
-            // 3. 其他 ID
+            // 2. BetTicketId（從 SettlementHistory 或 Bets 中提取）
+            // 3. PurchaseID（ReserveId/reserveid）
+            // 4. 其他 ID
             if (extractedBetId) {
                 info.betId = extractedBetId;
             } else if (Array.isArray(originalData)) {
@@ -712,8 +713,21 @@
                     info.betId = firstTransaction.reserveid;
                 }
             } else if (originalData && typeof originalData === 'object') {
-                // 注單詳情格式：使用 ReserveId (PurchaseID)
-                info.betId = originalData.ReserveId || originalData.SQLTicketId || originalData._id || '';
+                // 注單詳情格式：優先提取 BetTicketId
+                let betTicketId = null;
+
+                // 從 SettlementHistory 中提取 BetTicketId
+                if (originalData.SettlementHistory && Array.isArray(originalData.SettlementHistory) && originalData.SettlementHistory.length > 0) {
+                    betTicketId = originalData.SettlementHistory[0].BetTicketId;
+                }
+
+                // 如果沒有，從 Bets 中提取 TicketId
+                if (!betTicketId && originalData.Bets && Array.isArray(originalData.Bets) && originalData.Bets.length > 0) {
+                    betTicketId = originalData.Bets[0].TicketId;
+                }
+
+                // 設置 betId，優先使用 BetTicketId，然後是 ReserveId (PurchaseID)
+                info.betId = betTicketId || originalData.ReserveId || originalData.SQLTicketId || originalData._id || '';
             }
 
             // 如果還沒有 betId，從 detectionResult 中獲取
@@ -875,7 +889,14 @@ Reason for Resettlement: ${info.reason}`;
             }
 
             try {
-                const data = JSON.parse(input);
+                // 修復大整數精度問題：將 ID 字段轉換為字符串
+                // 這樣可以避免 JavaScript 數字精度丟失（超過 2^53-1 的整數）
+                let fixedInput = input
+                    .replace(/"(ReserveId|SQLTicketId|BetTicketId|TicketId|AccountOperationId|BetId|reserveid|_id)"\s*:\s*(\d{15,})/g,
+                             '"$1": "$2"')
+                    .replace(/"(id)"\s*:\s*"(\d+)"/g, '"$1": "$2"');  // 保留已是字符串的 id
+
+                const data = JSON.parse(fixedInput);
                 currentData = data; // 保存原始數據
                 const result = detectResettlement(data);
 
