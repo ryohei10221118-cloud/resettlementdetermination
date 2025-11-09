@@ -408,15 +408,17 @@
 
         function detectResettlementFromTicketDetail(ticketDetail) {
             if (ticketDetail.SettlementHistory && Array.isArray(ticketDetail.SettlementHistory)) {
-                // 只有當 OldBetStatus 和 NewBetStatus 都不是 0 (Open) 時才算重新結算
-                // 過濾掉：
-                // 1. Open → Won/Lost/Draw (正常結算)
-                // 2. Won/Lost → Open (取消/重開)
-                // 3. Open → Won/Lost (再次結算)
-                // 只保留：Won → Lost、Lost → Won、Won → Half Won 等（兩個都不是 Open）
-                const resettlementRecords = ticketDetail.SettlementHistory.filter(h =>
-                    h.OldBetStatus !== 0 && h.NewBetStatus !== 0
-                );
+                // 只過濾掉第一條從 Open (0) 開始的記錄（如果它是第一條）
+                // 之後的所有變化都算作重新結算
+                // 例如：Open→Lost, Lost→Open, Open→Won
+                // 過濾：Open→Lost（第一次正常結算）
+                // 保留：Lost→Open, Open→Won（重新結算的一部分）
+                let resettlementRecords = ticketDetail.SettlementHistory;
+
+                // 如果第一條記錄是從 Open 開始，則跳過它
+                if (resettlementRecords.length > 0 && resettlementRecords[0].OldBetStatus === 0) {
+                    resettlementRecords = resettlementRecords.slice(1);
+                }
 
                 if (resettlementRecords.length > 0) {
                     const settlements = resettlementRecords.map(h => ({
@@ -813,11 +815,12 @@
 
                 // 提取結算歷史（只包含重新結算記錄）
                 if (originalData.SettlementHistory && Array.isArray(originalData.SettlementHistory)) {
-                    // 只保留 OldBetStatus 和 NewBetStatus 都不是 0 (Open) 的記錄
-                    // 過濾掉 Open → Settled、Settled → Open、Open → Settled 的情況
-                    const resettlementRecords = originalData.SettlementHistory.filter(h =>
-                        h.OldBetStatus !== 0 && h.NewBetStatus !== 0
-                    );
+                    // 只過濾掉第一條從 Open (0) 開始的記錄
+                    let resettlementRecords = originalData.SettlementHistory;
+
+                    if (resettlementRecords.length > 0 && resettlementRecords[0].OldBetStatus === 0) {
+                        resettlementRecords = resettlementRecords.slice(1);
+                    }
 
                     if (resettlementRecords.length > 0) {
                         const first = resettlementRecords[0];
