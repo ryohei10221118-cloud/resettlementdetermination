@@ -408,9 +408,15 @@
 
         function detectResettlementFromTicketDetail(ticketDetail) {
             if (ticketDetail.SettlementHistory && Array.isArray(ticketDetail.SettlementHistory)) {
-                // 過濾掉第一次從 open (0) 變成其他狀態的記錄（這是正常結算）
-                // 只保留從非 open 狀態變化的記錄（這才是重新結算）
-                const resettlementRecords = ticketDetail.SettlementHistory.filter(h => h.OldBetStatus !== 0);
+                // 只有當 OldBetStatus 和 NewBetStatus 都不是 0 (Open) 時才算重新結算
+                // 過濾掉：
+                // 1. Open → Won/Lost/Draw (正常結算)
+                // 2. Won/Lost → Open (取消/重開)
+                // 3. Open → Won/Lost (再次結算)
+                // 只保留：Won → Lost、Lost → Won、Won → Half Won 等（兩個都不是 Open）
+                const resettlementRecords = ticketDetail.SettlementHistory.filter(h =>
+                    h.OldBetStatus !== 0 && h.NewBetStatus !== 0
+                );
 
                 if (resettlementRecords.length > 0) {
                     const settlements = resettlementRecords.map(h => ({
@@ -805,10 +811,13 @@
                     }
                 }
 
-                // 提取結算歷史（只包含重新結算記錄，排除第一次從 open 變成其他狀態的正常結算）
+                // 提取結算歷史（只包含重新結算記錄）
                 if (originalData.SettlementHistory && Array.isArray(originalData.SettlementHistory)) {
-                    // 過濾掉第一次從 open (0) 變成其他狀態的記錄
-                    const resettlementRecords = originalData.SettlementHistory.filter(h => h.OldBetStatus !== 0);
+                    // 只保留 OldBetStatus 和 NewBetStatus 都不是 0 (Open) 的記錄
+                    // 過濾掉 Open → Settled、Settled → Open、Open → Settled 的情況
+                    const resettlementRecords = originalData.SettlementHistory.filter(h =>
+                        h.OldBetStatus !== 0 && h.NewBetStatus !== 0
+                    );
 
                     if (resettlementRecords.length > 0) {
                         const first = resettlementRecords[0];
