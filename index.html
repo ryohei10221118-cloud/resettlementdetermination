@@ -313,9 +313,7 @@
                 <div class="button-group">
                     <button class="btn-primary" onclick="analyzeData()">🔍 開始檢測</button>
                     <button class="btn-secondary" onclick="clearAll()">🗑️ 清空</button>
-                    <button class="btn-example" onclick="loadExample1()">📝 範例 1 (交易記錄)</button>
-                    <button class="btn-example" onclick="loadExample2()">📝 範例 2 (注單詳情)</button>
-                    <button class="btn-example" onclick="loadExample3()">📝 範例 3 (三語言報告)</button>
+                    <button class="btn-example" onclick="loadExample()">📝 載入範例</button>
                 </div>
             </div>
 
@@ -637,6 +635,24 @@
                 reason: ''
             };
 
+            // 統一使用 ReserveId/reserveid 作為注單號（優先級最高）
+            // 這樣兩種格式的數據會顯示相同的注單號
+            if (Array.isArray(originalData)) {
+                // 交易陣列格式：從第一個交易中提取 reserveid
+                const firstTransaction = originalData.find(t => t.reserveid);
+                if (firstTransaction) {
+                    info.betId = firstTransaction.reserveid;
+                }
+            } else if (originalData && typeof originalData === 'object') {
+                // 注單詳情格式：優先使用 ReserveId
+                info.betId = originalData.ReserveId || originalData.SQLTicketId || originalData._id || '';
+            }
+
+            // 如果還沒有 betId，從 detectionResult 中獲取
+            if (!info.betId) {
+                info.betId = detectionResult.purchaseId || detectionResult.ticketId || '';
+            }
+
             // 處理交易陣列格式（從 XML 中提取信息）
             if (detectionResult.transactionData && Array.isArray(detectionResult.transactionData)) {
                 const transactions = detectionResult.transactionData;
@@ -654,12 +670,6 @@
 
                 if (targetTransaction && targetTransaction.reqparams) {
                     const xml = targetTransaction.reqparams;
-
-                    // 提取 Bet ID
-                    const betIdMatch = xml.match(/BetID="([^"]+)"/i) || xml.match(/<Bet[^>]*\sID="([^"]+)"/i);
-                    if (betIdMatch) {
-                        info.betId = betIdMatch[1];
-                    }
 
                     // 提取賽事名稱（從 Selection 或 Lines 元素）
                     const eventNameMatch = xml.match(/EventName="([^"]+)"/i);
@@ -697,22 +707,10 @@
                     info.lastUpdateTime = formatDateTime(settlementOps[settlementOps.length - 1].creationdate);
                 }
 
-                // 如果找到了信息，直接返回
-                if (info.betId || info.event) {
+                // 如果從 XML 中提取到了賽事信息，直接返回
+                if (info.event) {
                     return info;
                 }
-            }
-
-            // 處理注單詳情 JSON 格式（原有邏輯）
-            // 提取 Bet ID
-            if (originalData.SQLTicketId) {
-                info.betId = originalData.SQLTicketId;
-            } else if (originalData._id) {
-                info.betId = originalData._id;
-            } else if (detectionResult.ticketId) {
-                info.betId = detectionResult.ticketId;
-            } else if (detectionResult.purchaseId) {
-                info.betId = detectionResult.purchaseId;
             }
 
             // 從原始數據提取更多信息
@@ -980,74 +978,7 @@ Reason for Resettlement: ${info.reason}`;
 
         // ==================== 範例數據 ====================
 
-        function loadExample1() {
-            const example = [
-                {
-                    "id": "1703265824",
-                    "siteid": 20070,
-                    "reqtypeid": 12,
-                    "creationdate": "2025-11-08T20:22:22.894Z",
-                    "amount": "1000.00",
-                    "operationType": "credit_customer",
-                    "customerid": 146098876,
-                    "reserveid": "775089056288182272",
-                    "reqparams": "<Bet ... IsResettlement=\"0\" OldStatus=\"Opened\" NewStatus=\"Draw\" .../>",
-                    "balance": "1000.2100"
-                },
-                {
-                    "id": "1703298117",
-                    "siteid": 20070,
-                    "reqtypeid": 12,
-                    "creationdate": "2025-11-08T20:48:27.554Z",
-                    "amount": "1060.00",
-                    "operationType": "credit_customer",
-                    "customerid": 146098876,
-                    "reserveid": "775089056288182272",
-                    "reqparams": "<Bet ... IsResettlement=\"1\" OldStatus=\"Draw\" NewStatus=\"Won\" .../>",
-                    "balance": "3090.2100"
-                }
-            ];
-
-            document.getElementById('jsonInput').value = JSON.stringify(example, null, 2);
-        }
-
-        function loadExample2() {
-            const example = {
-                "SQLTicketId": 775089054982303744,
-                "ReserveId": 775089056288182272,
-                "SettlementHistory": [
-                    {
-                        "DateUpdated": "2025-11-08T20:22:22.8257767Z",
-                        "OldBetStatus": 0,
-                        "NewBetStatus": 3,
-                        "Gain": 1000,
-                        "PreviousBalance": 0,
-                        "EmployeeId": 0,
-                        "AccountOperationId": "775092625140416533"
-                    },
-                    {
-                        "DateUpdated": "2025-11-08T20:48:26.1542776Z",
-                        "OldBetStatus": 3,
-                        "NewBetStatus": 2,
-                        "Gain": 2060,
-                        "PreviousBalance": 1000,
-                        "EmployeeId": 1266,
-                        "AccountOperationId": "775099434156748800"
-                    }
-                ],
-                "ProcessedInputs": {
-                    "0OU772546805014831106": [
-                        775092625140416533,
-                        775098162787717120,
-                        775099434156748800
-                    ]
-                }
-            };
-
-            document.getElementById('jsonInput').value = JSON.stringify(example, null, 2);
-        }
-
-        function loadExample3() {
+        function loadExample() {
             const example = {
                 "SQLTicketId": 774027361405546497,
                 "ReserveId": 774027361405546497,
