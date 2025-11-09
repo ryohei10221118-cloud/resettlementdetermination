@@ -315,6 +315,7 @@
                     <button class="btn-secondary" onclick="clearAll()">🗑️ 清空</button>
                     <button class="btn-example" onclick="loadExample1()">📝 範例 1 (交易記錄)</button>
                     <button class="btn-example" onclick="loadExample2()">📝 範例 2 (注單詳情)</button>
+                    <button class="btn-example" onclick="loadExample3()">📝 範例 3 (三語言報告)</button>
                 </div>
             </div>
 
@@ -322,11 +323,13 @@
             <div class="section">
                 <div class="tabs">
                     <button class="tab active" onclick="switchTab('quick')">快速對話</button>
+                    <button class="tab" onclick="switchTab('trilingual')">三語言報告</button>
                     <button class="tab" onclick="switchTab('detail')">詳細資訊</button>
                     <button class="tab" onclick="switchTab('english')">English Version</button>
                 </div>
 
                 <div id="result-quick" class="result-box"></div>
+                <div id="result-trilingual" class="result-box" style="display: none;"></div>
                 <div id="result-detail" class="result-box" style="display: none;"></div>
                 <div id="result-english" class="result-box" style="display: none;"></div>
             </div>
@@ -624,6 +627,105 @@
             return message;
         }
 
+        // ==================== 三語言報告生成器 ====================
+
+        function extractDetailedInfo(detectionResult, originalData) {
+            if (!detectionResult.isResettlement) {
+                return null;
+            }
+
+            const info = {
+                betId: '',
+                event: '',
+                settlementHistory: '',
+                betStatus: '',
+                firstSettlementTime: '',
+                lastUpdateTime: '',
+                reason: ''
+            };
+
+            // 提取 Bet ID
+            if (detectionResult.ticketId) {
+                info.betId = detectionResult.ticketId;
+            } else if (detectionResult.purchaseId) {
+                info.betId = detectionResult.purchaseId;
+            }
+
+            // 從原始數據提取更多信息
+            if (originalData && typeof originalData === 'object' && !Array.isArray(originalData)) {
+                // 提取賽事名稱（如果有）
+                if (originalData.Event || originalData.EventName) {
+                    info.event = originalData.Event || originalData.EventName;
+                } else if (originalData.ProcessedInputs) {
+                    // 嘗試從 ProcessedInputs 的 key 中提取
+                    const keys = Object.keys(originalData.ProcessedInputs);
+                    if (keys.length > 0) {
+                        info.event = keys[0]; // 可能需要進一步解析
+                    }
+                }
+
+                // 提取結算歷史
+                if (originalData.SettlementHistory && Array.isArray(originalData.SettlementHistory)) {
+                    if (originalData.SettlementHistory.length > 0) {
+                        const first = originalData.SettlementHistory[0];
+                        const last = originalData.SettlementHistory[originalData.SettlementHistory.length - 1];
+
+                        // 結算歷史
+                        info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
+
+                        // 最終狀態
+                        info.betStatus = getBetStatusName(last.NewBetStatus);
+
+                        // 時間
+                        info.firstSettlementTime = formatDateTime(first.DateUpdated);
+                        info.lastUpdateTime = formatDateTime(last.DateUpdated);
+                    }
+                }
+            }
+
+            return info;
+        }
+
+        function generateTrilingualReport(info) {
+            if (!info) {
+                return '無法生成報告：未檢測到重新結算';
+            }
+
+            // 中文版
+            const chinese = `注单号：${info.betId}
+赛事：${info.event || '(待填入)'}
+赛事重新结算历史：${info.settlementHistory}
+注单状态：${info.betStatus}
+第一次结算时间：${info.firstSettlementTime}
+最后更新时间：${info.lastUpdateTime}
+重新结算原因：${info.reason}`;
+
+            // 英文版
+            const english = `Bet ID: ${info.betId}
+Event: ${info.event || '(To be filled)'}
+Event Resettlement History: ${info.settlementHistory}
+Bet Status: ${info.betStatus}
+First Settlement Time: ${info.firstSettlementTime}
+Last Update Time: ${info.lastUpdateTime}
+Reason for Resettlement: ${info.reason}`;
+
+            // 韓文版
+            const korean = `베팅 번호: ${info.betId}
+이벤트: ${info.event || '(입력 필요)'}
+경기 재정산 내역: ${info.settlementHistory}
+베팅 상태: ${info.betStatus}
+첫 번째 정산 시간: ${info.firstSettlementTime}
+마지막 업데이트 시간: ${info.lastUpdateTime}
+재정산 사유: ${info.reason}`;
+
+            return {
+                chinese,
+                english,
+                korean,
+                combined: `【中文】\n${chinese}\n\n【English】\n${english}\n\n【한국어】\n${korean}`
+            };
+        }
+
         // ==================== 輔助函數 ====================
 
         function formatDateTime(dateString) {
@@ -657,6 +759,8 @@
 
         // ==================== UI 函數 ====================
 
+        let currentData = null; // 保存當前數據以供三語言報告使用
+
         function analyzeData() {
             const input = document.getElementById('jsonInput').value.trim();
 
@@ -667,20 +771,22 @@
 
             try {
                 const data = JSON.parse(input);
+                currentData = data; // 保存原始數據
                 const result = detectResettlement(data);
 
-                displayResult(result);
+                displayResult(result, data);
             } catch (error) {
                 showError('JSON 格式錯誤：' + error.message);
             }
         }
 
-        function displayResult(result) {
+        function displayResult(result, originalData) {
             const quickMessage = generateQuickReplyMessage(result);
             const englishMessage = generateQuickReplyMessageEN(result);
             const detailInfo = JSON.stringify(result, null, 2);
 
             const quickBox = document.getElementById('result-quick');
+            const trilingualBox = document.getElementById('result-trilingual');
             const detailBox = document.getElementById('result-detail');
             const englishBox = document.getElementById('result-english');
 
@@ -698,6 +804,34 @@
                 <div class="result-content">${quickMessage}</div>
                 <button class="copy-button" onclick="copyToClipboard('${escapeHtml(quickMessage)}', this)">📋 複製訊息</button>
             `;
+
+            // 三語言報告
+            const detailedInfo = extractDetailedInfo(result, originalData);
+            const trilingualReport = generateTrilingualReport(detailedInfo);
+
+            if (result.isResettlement && trilingualReport.combined) {
+                trilingualBox.className = `result-box ${boxClass}`;
+                trilingualBox.innerHTML = `
+                    <div class="result-title">
+                        <span class="icon">🌐</span>
+                        三語言報告 (中文 / English / 한국어)
+                    </div>
+                    <div class="result-content">${trilingualReport.combined}</div>
+                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.chinese)}', this)">📋 複製中文</button>
+                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.english)}', this)">📋 Copy English</button>
+                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.korean)}', this)">📋 한국어 복사</button>
+                    <button class="copy-button" onclick="copyToClipboard('${escapeHtml(trilingualReport.combined)}', this)">📋 複製全部</button>
+                `;
+            } else {
+                trilingualBox.className = 'result-box success';
+                trilingualBox.innerHTML = `
+                    <div class="result-title">
+                        <span class="icon">✅</span>
+                        無重新結算
+                    </div>
+                    <div class="result-content">此注單無需生成三語言報告</div>
+                `;
+            }
 
             // 詳細資訊
             detailBox.className = `result-box ${boxClass}`;
@@ -738,8 +872,10 @@
         function clearAll() {
             document.getElementById('jsonInput').value = '';
             document.getElementById('result-quick').style.display = 'none';
+            document.getElementById('result-trilingual').style.display = 'none';
             document.getElementById('result-detail').style.display = 'none';
             document.getElementById('result-english').style.display = 'none';
+            currentData = null;
         }
 
         function switchTab(tab) {
@@ -749,6 +885,7 @@
 
             // 切換顯示
             document.getElementById('result-quick').style.display = tab === 'quick' ? 'block' : 'none';
+            document.getElementById('result-trilingual').style.display = tab === 'trilingual' ? 'block' : 'none';
             document.getElementById('result-detail').style.display = tab === 'detail' ? 'block' : 'none';
             document.getElementById('result-english').style.display = tab === 'english' ? 'block' : 'none';
         }
@@ -845,6 +982,42 @@
                         775092625140416533,
                         775098162787717120,
                         775099434156748800
+                    ]
+                }
+            };
+
+            document.getElementById('jsonInput').value = JSON.stringify(example, null, 2);
+        }
+
+        function loadExample3() {
+            const example = {
+                "SQLTicketId": 774027361405546497,
+                "ReserveId": 774027361405546497,
+                "Event": "Benfica vs Bayer Leverkusen",
+                "SettlementHistory": [
+                    {
+                        "DateUpdated": "2025-11-05T21:54:44Z",
+                        "OldBetStatus": 0,
+                        "NewBetStatus": 2,
+                        "Gain": 1500,
+                        "PreviousBalance": 0,
+                        "EmployeeId": 0,
+                        "AccountOperationId": "774027400000000001"
+                    },
+                    {
+                        "DateUpdated": "2025-11-06T00:47:27Z",
+                        "OldBetStatus": 2,
+                        "NewBetStatus": 1,
+                        "Gain": -1500,
+                        "PreviousBalance": 1500,
+                        "EmployeeId": 1001,
+                        "AccountOperationId": "774027400000000002"
+                    }
+                ],
+                "ProcessedInputs": {
+                    "BenficaVsBayerLeverkusen": [
+                        774027400000000001,
+                        774027400000000002
                     ]
                 }
             };
