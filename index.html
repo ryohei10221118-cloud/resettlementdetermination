@@ -408,8 +408,12 @@
 
         function detectResettlementFromTicketDetail(ticketDetail) {
             if (ticketDetail.SettlementHistory && Array.isArray(ticketDetail.SettlementHistory)) {
-                if (ticketDetail.SettlementHistory.length > 1) {
-                    const settlements = ticketDetail.SettlementHistory.map(h => ({
+                // 過濾掉第一次從 open (0) 變成其他狀態的記錄（這是正常結算）
+                // 只保留從非 open 狀態變化的記錄（這才是重新結算）
+                const resettlementRecords = ticketDetail.SettlementHistory.filter(h => h.OldBetStatus !== 0);
+
+                if (resettlementRecords.length > 0) {
+                    const settlements = resettlementRecords.map(h => ({
                         date: h.DateUpdated,
                         oldStatus: getBetStatusName(h.OldBetStatus),
                         newStatus: getBetStatusName(h.NewBetStatus),
@@ -421,35 +425,12 @@
 
                     return {
                         isResettlement: true,
-                        method: 'Multiple settlement history entries',
-                        settlementCount: ticketDetail.SettlementHistory.length,
+                        method: 'Status change from settled state',
+                        settlementCount: resettlementRecords.length,
                         settlements: settlements,
                         ticketId: ticketDetail.SQLTicketId,
                         purchaseId: ticketDetail.ReserveId
                     };
-                }
-
-                if (ticketDetail.SettlementHistory.length === 1) {
-                    const settlement = ticketDetail.SettlementHistory[0];
-                    const oldStatus = settlement.OldBetStatus;
-
-                    // FIXED: 1=Lost, 2=Won, 3=Draw, 16=Half Lost, 17=Half Won 都是已結算狀態
-                    const settledStatuses = [1, 2, 3, 16, 17];
-                    if (settledStatuses.includes(oldStatus)) {
-                        return {
-                            isResettlement: true,
-                            method: 'Status change from settled state',
-                            settlementCount: 1,
-                            settlements: [{
-                                date: settlement.DateUpdated,
-                                oldStatus: getBetStatusName(oldStatus),
-                                newStatus: getBetStatusName(settlement.NewBetStatus),
-                                gain: settlement.Gain,
-                                employeeId: settlement.EmployeeId
-                            }],
-                            ticketId: ticketDetail.SQLTicketId
-                        };
-                    }
                 }
             }
 
@@ -824,11 +805,14 @@
                     }
                 }
 
-                // 提取結算歷史
+                // 提取結算歷史（只包含重新結算記錄，排除第一次從 open 變成其他狀態的正常結算）
                 if (originalData.SettlementHistory && Array.isArray(originalData.SettlementHistory)) {
-                    if (originalData.SettlementHistory.length >= 2) {
-                        const first = originalData.SettlementHistory[0];
-                        const last = originalData.SettlementHistory[originalData.SettlementHistory.length - 1];
+                    // 過濾掉第一次從 open (0) 變成其他狀態的記錄
+                    const resettlementRecords = originalData.SettlementHistory.filter(h => h.OldBetStatus !== 0);
+
+                    if (resettlementRecords.length > 0) {
+                        const first = resettlementRecords[0];
+                        const last = resettlementRecords[resettlementRecords.length - 1];
 
                         // betStatus 總是顯示整張注單的最終狀態
                         info.betStatus = getBetStatusName(last.NewBetStatus);
@@ -843,14 +827,14 @@
                                 // 推斷該場賽事的狀態變化
                                 if (resettledSelection.SelectionStatus === 17) { // Half Won
                                     // 檢查整個 Bet 從什麼狀態變化而來
-                                    const oldBetStatus = first.NewBetStatus; // 第一次結算後的狀態
+                                    const oldBetStatus = first.OldBetStatus;
                                     if (oldBetStatus === 1) { // 如果整個 Bet 曾經是 Lost
                                         info.settlementHistory = 'Lost → Half Won';
                                     } else {
                                         info.settlementHistory = 'Won → Half Won';
                                     }
                                 } else if (resettledSelection.SelectionStatus === 16) { // Half Lost
-                                    const oldBetStatus = first.NewBetStatus;
+                                    const oldBetStatus = first.OldBetStatus;
                                     if (oldBetStatus === 2) { // 如果整個 Bet 曾經是 Won
                                         info.settlementHistory = 'Won → Half Lost';
                                     } else {
@@ -858,26 +842,20 @@
                                     }
                                 } else {
                                     // 其他情況，使用整個 Bet 的狀態變化
-                                    info.settlementHistory = `${getBetStatusName(first.NewBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
+                                    info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
                                 }
                             } else {
                                 // 沒找到 selection，使用整個 Bet 的狀態變化
-                                info.settlementHistory = `${getBetStatusName(first.NewBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
+                                info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
                             }
                         } else {
                             // 單場注單或沒找到 resettled selection，使用整個 Bet 的狀態變化
-                            info.settlementHistory = `${getBetStatusName(first.NewBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
+                            info.settlementHistory = `${getBetStatusName(first.OldBetStatus)} → ${getBetStatusName(last.NewBetStatus)}`;
                         }
 
                         // 時間
                         info.firstSettlementTime = formatDateTime(first.DateUpdated);
                         info.lastUpdateTime = formatDateTime(last.DateUpdated);
-                    } else if (originalData.SettlementHistory.length === 1) {
-                        const settlement = originalData.SettlementHistory[0];
-                        info.settlementHistory = `${getBetStatusName(settlement.OldBetStatus)} → ${getBetStatusName(settlement.NewBetStatus)}`;
-                        info.betStatus = getBetStatusName(settlement.NewBetStatus);
-                        info.firstSettlementTime = formatDateTime(settlement.DateUpdated);
-                        info.lastUpdateTime = formatDateTime(settlement.DateUpdated);
                     }
                 }
             }
