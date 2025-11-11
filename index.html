@@ -294,7 +294,7 @@
     <div class="container">
         <div class="header">
             <h1>⚡ 注單重新結算檢測工具</h1>
-            <p>支援交易記錄陣列與注單詳情 JSON 兩種格式</p>
+            <p>支援交易記錄陣列、注單詳情 JSON 與 XML 三種格式</p>
         </div>
 
         <div class="content">
@@ -306,9 +306,10 @@
                     <strong>支援格式：</strong>
                     <br>• 格式 1：交易記錄陣列 (Array of transactions)
                     <br>• 格式 2：注單詳情 JSON (Ticket detail with SettlementHistory)
+                    <br>• 格式 3：交易記錄 XML (Credit/Purchase XML with IsResettlement flag)
                 </div>
 
-                <textarea id="jsonInput" placeholder="請貼上 JSON 數據..."></textarea>
+                <textarea id="jsonInput" placeholder="請貼上 JSON 或 XML 數據..."></textarea>
 
                 <div class="button-group">
                     <button class="btn-primary" onclick="analyzeData()">🔍 開始檢測</button>
@@ -328,6 +329,10 @@
         // ==================== 核心檢測函數 ====================
 
         function detectResettlement(data) {
+            // 檢測是否為 XML 字符串
+            if (typeof data === 'string' && data.trim().startsWith('<')) {
+                return detectResettlementFromXML(data);
+            }
             if (Array.isArray(data)) {
                 return detectResettlementFromTransactions(data);
             }
@@ -337,7 +342,7 @@
             return {
                 isResettlement: false,
                 method: 'Invalid data format',
-                error: 'Data must be an array or object'
+                error: 'Data must be an array, object, or XML string'
             };
         }
 
@@ -461,6 +466,69 @@
                 isResettlement: false,
                 method: 'No resettlement detected in ticket detail'
             };
+        }
+
+        function detectResettlementFromXML(xmlString) {
+            try {
+                // 檢查是否包含 IsResettlement="1" 標記
+                const hasResettlementFlag = xmlString.includes('IsResettlement="1"');
+
+                if (!hasResettlementFlag) {
+                    return {
+                        isResettlement: false,
+                        method: 'No resettlement flag in XML'
+                    };
+                }
+
+                // 提取關鍵信息
+                const result = {
+                    isResettlement: true,
+                    method: 'XML resettlement detected',
+                    xmlData: xmlString,
+                    changes: []
+                };
+
+                // 提取 PurchaseID 和 ReserveID
+                const purchaseMatch = xmlString.match(/PurchaseID="([^"]+)"/);
+                const reserveMatch = xmlString.match(/ReserveID="([^"]+)"/);
+                if (purchaseMatch) result.purchaseId = purchaseMatch[1];
+                if (reserveMatch) result.reserveId = reserveMatch[1];
+
+                // 提取所有的 <Change> 元素
+                const changeRegex = /<Change[^>]*>/g;
+                const changeMatches = xmlString.match(changeRegex);
+
+                if (changeMatches) {
+                    changeMatches.forEach(changeTag => {
+                        const oldStatusMatch = changeTag.match(/OldStatus="([^"]+)"/);
+                        const newStatusMatch = changeTag.match(/NewStatus="([^"]+)"/);
+                        const dateMatch = changeTag.match(/DateUTC="([^"]+)"/);
+
+                        if (oldStatusMatch && newStatusMatch) {
+                            result.changes.push({
+                                oldStatus: oldStatusMatch[1],
+                                newStatus: newStatusMatch[1],
+                                date: dateMatch ? dateMatch[1] : null
+                            });
+                        }
+                    });
+                }
+
+                // 提取 Selection 信息
+                const eventNameMatch = xmlString.match(/EventName="([^"]+)"/);
+                const lineIdMatch = xmlString.match(/LineID="([^"]+)"/);
+
+                if (eventNameMatch) result.eventName = eventNameMatch[1];
+                if (lineIdMatch) result.lineId = lineIdMatch[1];
+
+                return result;
+            } catch (error) {
+                return {
+                    isResettlement: false,
+                    method: 'XML parsing error',
+                    error: error.message
+                };
+            }
         }
 
         // FIXED: 正確的狀態碼對應
@@ -624,6 +692,48 @@
                 lastUpdateTime: '',
                 reason: ''
             };
+
+            // 處理 XML 格式的檢測結果
+            if (detectionResult.method === 'XML resettlement detected' && detectionResult.xmlData) {
+                const xml = detectionResult.xmlData;
+
+                // 提取 Bet ID（優先使用 PurchaseID，其次 ReserveID）
+                info.betId = detectionResult.purchaseId || detectionResult.reserveId || '';
+
+                // 提取賽事名稱
+                info.event = detectionResult.eventName || '';
+
+                // 提取賽事狀態變化（從 <Change> 元素）
+                if (detectionResult.changes && detectionResult.changes.length > 0) {
+                    const firstChange = detectionResult.changes[0];
+                    const lastChange = detectionResult.changes[detectionResult.changes.length - 1];
+
+                    // Event Resettlement History: 顯示賽事層面的狀態變化
+                    info.settlementHistory = `${firstChange.oldStatus} → ${lastChange.newStatus}`;
+
+                    // Event Status: 最終的賽事狀態
+                    info.eventStatus = lastChange.newStatus;
+
+                    // 時間
+                    if (firstChange.date) {
+                        info.firstSettlementTime = formatDateTime(firstChange.date);
+                    }
+                    if (lastChange.date) {
+                        info.lastUpdateTime = formatDateTime(lastChange.date);
+                    }
+                }
+
+                // 提取 Bet Status（從 <Bet> 元素）
+                const betStatusMatch = xml.match(/<Bet[^>]*\sNewStatus="([^"]+)"/);
+                if (betStatusMatch) {
+                    info.betStatus = betStatusMatch[1];
+                } else {
+                    // 如果沒有找到 Bet 的 NewStatus，使用 Change 的狀態作為 fallback
+                    info.betStatus = info.eventStatus;
+                }
+
+                return info;
+            }
 
             // 優先使用 BetID（從 XML 提取）或 PurchaseID（ReserveId/reserveid）
             // 先嘗試從交易陣列的 XML 中提取 BetID
@@ -916,7 +1026,8 @@ Reason for Resettlement: ${info.reason}`;
                 'Multiple settlement operations': '多次結算操作',
                 'Status change from settled state': '從已結算狀態變更',
                 'Multiple processed inputs': '多次處理輸入',
-                'IsResettlement flag in XML': 'XML重新結算標記'
+                'IsResettlement flag in XML': 'XML重新結算標記',
+                'XML resettlement detected': 'XML重新結算標記'
             };
             return methodMap[method] || method;
         }
@@ -929,29 +1040,39 @@ Reason for Resettlement: ${info.reason}`;
             const input = document.getElementById('jsonInput').value.trim();
 
             if (!input) {
-                alert('請先輸入 JSON 數據！');
+                alert('請先輸入數據！');
                 return;
             }
 
             try {
-                // 修復大整數精度問題：將 ID 字段轉換為字符串
-                // 這樣可以避免 JavaScript 數字精度丟失（超過 2^53-1 的整數）
-                let fixedInput = input
-                    // 1. 轉換物件中的 ID 字段（如 "ReserveId": 123 → "ReserveId": "123"）
-                    .replace(/"(ReserveId|SQLTicketId|BetTicketId|TicketId|AccountOperationId|BetId|reserveid|_id|InputId)"\s*:\s*(\d{15,})/g,
-                             '"$1": "$2"')
-                    // 2. 轉換陣列中的大整數（如 [123, 456] → ["123", "456"]）
-                    .replace(/(\[|,)\s*(\d{15,})/g, '$1"$2"')
-                    // 3. 修正被錯誤轉換的數字（如陣列結尾）
-                    .replace(/"(\d{15,})"\s*(\]|,)/g, '"$1"$2');
+                let data;
 
-                const data = JSON.parse(fixedInput);
-                currentData = data; // 保存原始數據
+                // 檢查是否為 XML 格式
+                if (input.startsWith('<')) {
+                    // 直接使用 XML 字符串
+                    data = input;
+                    currentData = input;
+                } else {
+                    // JSON 格式處理
+                    // 修復大整數精度問題：將 ID 字段轉換為字符串
+                    // 這樣可以避免 JavaScript 數字精度丟失（超過 2^53-1 的整數）
+                    let fixedInput = input
+                        // 1. 轉換物件中的 ID 字段（如 "ReserveId": 123 → "ReserveId": "123"）
+                        .replace(/"(ReserveId|SQLTicketId|BetTicketId|TicketId|AccountOperationId|BetId|reserveid|_id|InputId)"\s*:\s*(\d{15,})/g,
+                                 '"$1": "$2"')
+                        // 2. 轉換陣列中的大整數（如 [123, 456] → ["123", "456"]）
+                        .replace(/(\[|,)\s*(\d{15,})/g, '$1"$2"')
+                        // 3. 修正被錯誤轉換的數字（如陣列結尾）
+                        .replace(/"(\d{15,})"\s*(\]|,)/g, '"$1"$2');
+
+                    data = JSON.parse(fixedInput);
+                    currentData = data; // 保存原始數據
+                }
+
                 const result = detectResettlement(data);
-
                 displayResult(result, data);
             } catch (error) {
-                showError('JSON 格式錯誤：' + error.message);
+                showError('數據格式錯誤：' + error.message);
             }
         }
 
